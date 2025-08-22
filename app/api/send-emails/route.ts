@@ -11,6 +11,10 @@ type EmailPayload = {
   to: Array<{ email: string }>
   subject: string
   htmlContent: string
+  textContent?: string
+  headers?: {
+    'Content-Type': string
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -55,6 +59,22 @@ export async function POST(request: NextRequest) {
     // Process each batch
     for (const [index, batch] of batches.entries()) {
       try {
+        // Ensure htmlContent has proper HTML structure if it's just plain text
+        const formattedHtmlContent = htmlContent.trim().startsWith('<!DOCTYPE html>') 
+          ? htmlContent 
+          : `<!DOCTYPE html>
+            <html>
+              <head>
+                <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+                <title>${subject}</title>
+              </head>
+              <body>
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333;">
+                  ${htmlContent.replace(/\n/g, '<br>')}
+                </div>
+              </body>
+            </html>`;
+
         const payload: EmailPayload = {
           sender: {
             name: sender.name,
@@ -62,7 +82,10 @@ export async function POST(request: NextRequest) {
           },
           to: batch.map(email => ({ email })),
           subject,
-          htmlContent
+          htmlContent: formattedHtmlContent,
+          headers: {
+            'Content-Type': 'text/html; charset=UTF-8'
+          }
         }
 
         const response = await fetch(BREVO_API_URL, {
