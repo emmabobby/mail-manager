@@ -1,30 +1,103 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Trash2, Mail, Plus, Send } from "lucide-react"
+import { Trash2, Mail, Plus, Send, ClipboardPaste } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
 export default function EmailManager() {
   const [emailCount, setEmailCount] = useState<number>(0)
   const [emailList, setEmailList] = useState<string[]>([])
   const [newEmail, setNewEmail] = useState("")
+  const [bulkInput, setBulkInput] = useState("")         // NEW: bulk paste input
   const [emailSubject, setEmailSubject] = useState("")
   const [emailContent, setEmailContent] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
 
+  // Simple email validator (good enough for product UI)
+  const isValidEmail = (e: string) => /^\S+@\S+\.\S+$/.test(e)
+
+  // Split by commas, semicolons, whitespace, or new lines
+  const parseEmails = (text: string) => {
+    return text
+      .split(/[\s,;]+/)
+      .map(e => e.trim().toLowerCase())
+      .filter(Boolean)
+  }
+
   const addEmail = () => {
-    if (newEmail.trim() && !emailList.includes(newEmail.trim())) {
-      setEmailList([...emailList, newEmail.trim()])
-      setNewEmail("")
-      setEmailCount(emailList.length + 1)
+    const candidate = newEmail.trim().toLowerCase()
+    if (!candidate) return
+    if (!isValidEmail(candidate)) {
+      toast({
+        title: "Invalid email",
+        description: `"${candidate}" is not a valid email address.`,
+        variant: "destructive",
+      })
+      return
     }
+    if (emailList.includes(candidate)) {
+      toast({
+        title: "Duplicate",
+        description: `"${candidate}" is already in the list.`,
+      })
+      return
+    }
+    const updated = [...emailList, candidate]
+    setEmailList(updated)
+    setEmailCount(updated.length)
+    setNewEmail("")
+  }
+
+  // NEW: Add many at once from bulkInput (paste)
+  const addEmailsFromText = (text: string) => {
+    const parsed = parseEmails(text)
+    if (parsed.length === 0) {
+      toast({ title: "Nothing to add", description: "Paste emails separated by commas, spaces, or new lines." })
+      return
+    }
+
+    const uniques = new Set(emailList)
+    let added = 0
+    let duplicates = 0
+    let invalids = 0
+
+    for (const e of parsed) {
+      if (!isValidEmail(e)) {
+        invalids++
+        continue
+      }
+      if (uniques.has(e)) {
+        duplicates++
+        continue
+      }
+      uniques.add(e)
+      added++
+    }
+
+    const updated = Array.from(uniques)
+    setEmailList(updated)
+    setEmailCount(updated.length)
+
+    toast({
+      title: added > 0 ? `Added ${added} email${added === 1 ? "" : "s"}` : "No new emails added",
+      description: `${duplicates} duplicate${duplicates === 1 ? "" : "s"}, ${invalids} invalid.`,
+    })
+
+    setBulkInput("") // clear textarea after processing
+  }
+
+  // Optional: auto-add on paste (no extra click)
+  const handleBulkPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Delay to let the pasted content land in the textarea
+    setTimeout(() => {
+      addEmailsFromText((e.target as HTMLTextAreaElement).value)
+    }, 0)
   }
 
   const removeEmail = (emailToRemove: string) => {
@@ -60,7 +133,7 @@ export default function EmailManager() {
     if (!emailContent.trim()) {
       toast({
         title: "Missing content",
-        description: "Please enter the email content.",
+        description: "Please enter the email content (HTML).",
         variant: "destructive",
       })
       return
@@ -71,36 +144,33 @@ export default function EmailManager() {
     try {
       const response = await fetch('/api/send-emails', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           emails: emailList,
           subject: emailSubject,
           htmlContent: emailContent,
           sender: {
             name: "John",
-            email: "jghatti396@gmail.com"
-          }
+            email: "jghatti396@gmail.com",
+          },
         }),
       })
 
       const data = await response.json()
 
-      if (data.summary.success === 0) {
-        throw new Error(data.results[0]?.error || 'Failed to send emails')
+      if (data.summary?.success === 0) {
+        throw new Error(data.results?.[0]?.error || 'Failed to send emails')
       }
 
-      if (data.summary.failed > 0) {
+      if (data.summary?.failed > 0) {
         toast({
           title: "Partial success",
           description: `Successfully sent ${data.summary.success} out of ${emailList.length} emails. ${data.summary.failed} failed.`,
-          variant: "default",
         })
       } else {
         toast({
           title: "Emails sent successfully!",
-          description: `Successfully sent ${data.summary.success} emails.`,
+          description: `Successfully sent ${data.summary?.success ?? emailList.length} emails.`,
         })
       }
 
@@ -128,7 +198,7 @@ export default function EmailManager() {
       <div className="max-w-2xl mx-auto space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-3xl font-bold">Email Manager</h1>
-          <p className="text-muted-foreground">Manage and send emails </p>
+          <p className="text-muted-foreground">Manage and send emails</p>
         </div>
 
         <Card>
@@ -148,19 +218,45 @@ export default function EmailManager() {
               </Badge>
             </div>
 
-            {/* Add Email Input */}
+            {/* Single Add (kept) */}
             <div className="flex gap-2">
               <Input
                 type="email"
-                placeholder="Enter email address"
+                placeholder="Enter a single email"
                 value={newEmail}
                 onChange={(e) => setNewEmail(e.target.value)}
                 onKeyPress={handleKeyPress}
                 className="flex-1"
               />
-              <Button onClick={addEmail} size="icon">
+              <Button onClick={addEmail} size="icon" title="Add single email">
                 <Plus className="h-4 w-4" />
               </Button>
+            </div>
+
+            {/* NEW: Bulk Paste */}
+            <div className="space-y-2">
+              <label htmlFor="bulk-emails" className="text-sm font-medium">
+                Bulk paste (comma, space, or new line)
+              </label>
+              <textarea
+                id="bulk-emails"
+                className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                placeholder={`e.g.
+jane@example.com
+john@example.com, team@company.com more@company.com`}
+                value={bulkInput}
+                onChange={(e) => setBulkInput(e.target.value)}
+                onPaste={handleBulkPaste} // auto-add on paste
+              />
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" onClick={() => addEmailsFromText(bulkInput)}>
+                  <ClipboardPaste className="h-4 w-4 mr-2" />
+                  Add all
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  We’ll remove duplicates and ignore invalid emails.
+                </span>
+              </div>
             </div>
 
             {/* Email List */}
@@ -186,6 +282,7 @@ export default function EmailManager() {
                         size="sm"
                         onClick={() => removeEmail(email)}
                         className="text-destructive hover:text-destructive h-8 w-8 p-0"
+                        title="Remove"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -225,10 +322,10 @@ export default function EmailManager() {
             </div>
 
             {/* Send Button */}
-            <Button 
-              onClick={sendEmails} 
-              disabled={isLoading || emailList.length === 0 || !emailSubject.trim() || !emailContent.trim()} 
-              className="w-full" 
+            <Button
+              onClick={sendEmails}
+              disabled={isLoading || emailList.length === 0 || !emailSubject.trim() || !emailContent.trim()}
+              className="w-full"
               size="lg"
             >
               {isLoading ? (
@@ -252,10 +349,10 @@ export default function EmailManager() {
             <CardTitle className="text-lg">How to use</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>1. Enter email addresses one by one and click the + button</p>
-            <p>2. Review your email list and remove any unwanted addresses</p>
-            <p>3. Click "Send" to send emails </p>
-            <p>4. After sending, you can clear the list and add new accounts</p>
+            <p>1. Paste many emails at once into the Bulk paste box (comma, space, or new line).</p>
+            <p>2. Click <strong>Add all</strong> or just paste—auto-add will trigger on paste.</p>
+            <p>3. Review the list; remove any you don’t want.</p>
+            <p>4. Enter subject and HTML content, then click <strong>Send</strong>.</p>
           </CardContent>
         </Card>
       </div>
