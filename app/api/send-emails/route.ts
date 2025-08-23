@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email'
-const BATCH_SIZE = 500 // Maximum emails per batch
+const BATCH_SIZE = 1000 // Maximum emails per batch
 
 type EmailPayload = {
   sender: {
@@ -59,19 +59,29 @@ export async function POST(request: NextRequest) {
     // Process each batch
     for (const [index, batch] of batches.entries()) {
       try {
-        // Ensure htmlContent has proper HTML structure if it's just plain text
-        const formattedHtmlContent = htmlContent.trim().startsWith('<!DOCTYPE html>') 
-          ? htmlContent 
+        // Use the provided HTML content as-is if it's already a complete HTML document
+        // Otherwise, wrap it in a basic HTML structure
+        const formattedHtmlContent = htmlContent.trim().startsWith('<!DOCTYPE html>')
+          ? htmlContent
           : `<!DOCTYPE html>
             <html>
               <head>
                 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>${subject}</title>
+                <style>
+                  body {
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333333;
+                    margin: 0;
+                    padding: 20px;
+                    background-color: #f8f9fa;
+                  }
+                </style>
               </head>
               <body>
-                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333;">
-                  ${htmlContent.replace(/\n/g, '<br>')}
-                </div>
+                ${htmlContent}
               </body>
             </html>`;
 
