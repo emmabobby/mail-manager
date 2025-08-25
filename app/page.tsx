@@ -1,13 +1,15 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Trash2, Mail, Plus, Send, ClipboardPaste } from "lucide-react"
+import { Trash2, Mail, Plus, Send, ClipboardPaste, Link2, Code2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { LinkModal } from "@/components/link-modal"
 
 export default function EmailManager() {
   const [emailCount, setEmailCount] = useState<number>(0)
@@ -17,6 +19,7 @@ export default function EmailManager() {
   const [emailSubject, setEmailSubject] = useState("")
   const [emailContent, setEmailContent] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const { toast } = useToast()
 
   // Simple email validator (good enough for product UI)
@@ -130,13 +133,14 @@ export default function EmailManager() {
       return
     }
 
-    if (!emailContent.trim()) {
-      toast({
-        title: "Missing content",
-        description: "Please enter the email content (HTML).",
-        variant: "destructive",
-      })
-      return
+    let finalContent = emailContent.trim()
+
+    // If content doesn't look like HTML, wrap it in paragraphs
+    if (!/<[a-z][\s\S]*>/i.test(finalContent)) {
+      finalContent = finalContent
+        .split('\n')
+        .map(line => line.trim() ? `<p>${line}</p>` : '<p>&nbsp;</p>')
+        .join('')
     }
 
     setIsLoading(true)
@@ -150,7 +154,7 @@ export default function EmailManager() {
         body: JSON.stringify({
           emails: emailList,
           subject: emailSubject,
-          htmlContent: emailContent,
+          htmlContent: finalContent,
           sender: {
             name: "John",  // Replace with actual sender name
             email: "michaeleustace638@gmail.com"
@@ -310,17 +314,145 @@ john@example.com, team@company.com more@company.com`}
 
             {/* Email Content */}
             <div className="space-y-2">
-              <label htmlFor="email-content" className="text-sm font-medium">
-                Email Content 
-              </label>
-              <textarea
-                id="email-content"
-                className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                placeholder="Your email content here..."
-                value={emailContent}
-                onChange={(e) => setEmailContent(e.target.value)}
-                disabled={isLoading}
-              />
+              <div className="grid gap-4">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="email-content">Email Content</Label>
+                </div>
+                <div className="relative">
+                  <textarea
+                    ref={textareaRef}
+                    id="email-content"
+                    className="min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    value={emailContent}
+                    onChange={(e) => setEmailContent(e.target.value)}
+                    placeholder="Enter your email content here..."
+                    disabled={isLoading}
+                  />
+                  <div className="absolute right-2 top-2 flex space-x-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => {
+                        const plainText = emailContent;
+                        const paragraphs = plainText
+                          .split('\n\n')
+                          .filter(p => p.trim() !== '');
+
+                        let htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Template</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333333;
+      margin: 0;
+      padding: 20px;
+      background-color: #f8f9fa;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #007BFF;
+      font-size: 20px;
+    }
+    p {
+      font-size: 15px;
+      margin: 10px 0;
+    }
+    .button {
+      display: inline-block;
+      background-color: #007BFF;
+      color: #ffffff !important;
+      padding: 12px 24px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+    .footer {
+      margin-top: 30px;
+      font-size: 12px;
+      color: #666666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Dear {{recipientName}},</h1>
+`;
+
+                        // Convert paragraphs to HTML
+                        paragraphs.forEach(para => {
+                          // Check if paragraph contains a URL
+                          const urlMatch = para.match(/\b(https?:\/\/[^\s]+)\b/);
+
+                          if (urlMatch) {
+                            const url = urlMatch[0];
+                            const text = para.replace(url, '').trim() || 'Click here';
+                            htmlContent += `    <p style="text-align: center;">
+      <a href="${url}" class="button" target="_blank">
+        ${text}
+      </a>
+    </p>\n`;
+                          } else {
+                            // Regular paragraph
+                            htmlContent += `    <p>${para.replace(/\n/g, '<br>')}</p>\n`;
+                          }
+                        });
+
+                        // Add closing tags
+                        htmlContent += `   
+    <div class="footer">
+      © ${new Date().getFullYear()} .
+    </div>
+  </div>
+</body>
+</html>`;
+
+                        setEmailContent(htmlContent);
+
+                        toast({
+                          title: "Template Generated",
+                          description: "Plain text has been converted to an HTML email template.",
+                        });
+                      }}
+                      title="Convert to HTML Template"
+                    >
+                      <Code2 className="h-4 w-4" />
+                    </Button>
+                    <LinkModal
+                      onInsert={(text, url) => {
+                        const cursorPos = textareaRef.current?.selectionStart || 0;
+                        const before = emailContent.substring(0, cursorPos);
+                        const after = emailContent.substring(cursorPos);
+                        const newContent = `${before}<a href="${url}" style="color: #2563eb; text-decoration: underline;">${text}</a>${after}`;
+                        setEmailContent(newContent);
+
+                        // Set cursor position after the inserted link
+                        setTimeout(() => {
+                          if (textareaRef.current) {
+                            const newCursorPos = cursorPos + text.length + 15 + url.length;
+                            textareaRef.current.focus();
+                            textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+                          }
+                        }, 0);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Send Button */}
