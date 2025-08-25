@@ -144,22 +144,24 @@ export default function EmailManager() {
     try {
       const response = await fetch('/api/send-emails', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           emails: emailList,
           subject: emailSubject,
           htmlContent: emailContent,
           sender: {
-            name: "John",
-            email: "jghatti396@gmail.com",
-          },
+            name: "John",  // Replace with actual sender name
+            email: "jghatti396@gmail.com"
+          }
         }),
-      })
+      });
 
       const data = await response.json()
 
-      if (data.summary?.success === 0) {
-        throw new Error(data.results?.[0]?.error || 'Failed to send emails')
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to send emails')
       }
 
       if (data.summary?.failed > 0) {
