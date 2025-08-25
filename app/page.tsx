@@ -153,7 +153,7 @@ export default function EmailManager() {
           htmlContent: emailContent,
           sender: {
             name: "John",  // Replace with actual sender name
-            email: "jghatti396@gmail.com"
+            email: "michaeleustace638@gmail.com"
           }
         }),
       });
