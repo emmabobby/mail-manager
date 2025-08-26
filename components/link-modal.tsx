@@ -12,10 +12,21 @@ export function LinkModal({ onInsert }: { onInsert: (text: string, url: string) 
   const [linkUrl, setLinkUrl] = useState("")
   const isFormValid = linkText.trim() !== "" && linkUrl.trim() !== ""
 
+  // If no scheme is present, default to https://
+  const normalizeUrl = (url: string) => {
+    const trimmed = url.trim()
+    if (!trimmed) return trimmed
+    // If it already has a scheme like http:, https:, mailto:, etc., keep as-is
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return trimmed
+    // Protocol-relative URLs like //example.com -> keep as-is (rare in emails but supported)
+    if (trimmed.startsWith("//")) return trimmed
+    return `https://${trimmed}`
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (isFormValid) {
-      onInsert(linkText, linkUrl)
+      onInsert(linkText, normalizeUrl(linkUrl))
       setLinkText("")
       setLinkUrl("")
       setOpen(false)

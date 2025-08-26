@@ -71,6 +71,34 @@ export async function POST(request: Request) {
         .replace(/\n{3,}/g, '\n\n')
         .trim()
 
+    // Derive a human-readable name from an email address
+    const nameFromEmail = (email: string) => {
+      try {
+        const local = email.split('@')[0] || ''
+        const withoutPlus = local.split('+')[0]
+        const parts = withoutPlus
+          .replace(/[^a-zA-Z0-9_.-]/g, ' ') // keep common separators
+          .replace(/[_.-]+/g, ' ') // normalize separators to spaces
+          .trim()
+          .split(/\s+/)
+        if (!parts.length) return 'there'
+        const words = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+        return words.join(' ')
+      } catch {
+        return 'there'
+      }
+    }
+
+    // Replace supported placeholders with the recipient's name
+    const personalizeContent = (content: string, email: string) => {
+      const name = nameFromEmail(email)
+      return content
+        .replace(/\{\{\s*receipetien\s*\}\}/gi, name)
+        .replace(/\{\{\s*recipient\s*\}\}/gi, name)
+        .replace(/\{\{\s*recipientname\s*\}\}/gi, name)
+        .replace(/\{\{\s*name\s*\}\}/gi, name)
+    }
+
     // Format HTML content with a professional email template
     const formatHtmlContent = (content: string, subjectLine: string) => {
       const trimmedContent = content.trim()
@@ -78,6 +106,66 @@ export async function POST(request: Request) {
       // If already a full HTML doc, return as-is
       if (/^\s*<!doctype html>/i.test(trimmedContent) || /^\s*<html[^>]*>/i.test(trimmedContent)) {
         return trimmedContent
+      }
+
+      // If content appears to be an HTML fragment (e.g., <p>...</p>), treat it specially
+      const isHtmlFragment = /<\w+[^>]*>/.test(trimmedContent)
+      if (isHtmlFragment) {
+        // Detect the first URL in the fragment
+        const firstUrlMatch = trimmedContent.match(/https?:\/\/[^\s<)]+/)
+        const firstUrl = firstUrlMatch?.[0]
+
+        // Auto-buttonize CTA paragraphs containing only the phrase
+        const ctaPhrases = ['view more', 'learn more', 'see more']
+        const ctaPattern = new RegExp(
+          `<p[^>]*>\\s*(?:${ctaPhrases.map(p => p.replace(/ /g, '\\s*')).join('|')})\\s*<\\/p>`,
+          'gi'
+        )
+        const fragmentWithCta = trimmedContent.replace(ctaPattern, (match) => {
+          if (!firstUrl) return match
+          // Normalize text to Title Case based on the matched inner text
+          const text = match
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/gi, ' ')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .replace(/\b\w/g, (c) => c.toUpperCase())
+          return `
+            <div style="text-align:center;margin:20px 0;">
+              <a href="${firstUrl}" target="_blank" class="button">${text}</a>
+            </div>
+          `
+        })
+
+        // Return the fragment inside our template without paragraphization
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${subjectLine}</title>
+<style>
+  body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 20px; background-color: #f8f9fa; }
+  .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+  h1 { color: #2563eb; font-size: 20px; margin-top: 0; }
+  p { font-size: 15px; margin: 15px 0; line-height: 1.6; }
+  .button { display: inline-block; background-color: #2563eb; color: #fff !important; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 20px 0; text-align: center; min-width: 200px; }
+  .footer { margin-top: 30px; font-size: 12px; color: #666; border-top: 1px solid #eee; padding-top: 15px; }
+  @media only screen and (max-width: 600px) {
+    .container { width: 100% !important; padding: 15px !important; }
+    .button { display: block !important; margin: 20px auto !important; width: 100%; max-width: 280px; box-sizing: border-box; }
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    ${fragmentWithCta}
+    <div class="footer">© ${new Date().getFullYear()}.</div>
+  </div>
+</body>
+</html>`
       }
 
       // Convert markdown-style links [text](url) to HTML (with optional !btn! prefix)
@@ -93,18 +181,42 @@ export async function POST(request: Request) {
         return `<a href="${url}" style="color:#2563eb;text-decoration:underline;">${text}</a>`
       })
 
+      // Find the first URL (used for auto button when we see a standalone "view more")
+      const firstUrlMatch = withMarkdownLinks.match(/https?:\/\/[^\s<)]+/)
+      const firstUrl = firstUrlMatch?.[0]
+
       // Convert plain URLs to links
       const withPlainLinks = withMarkdownLinks.replace(
         /(https?:\/\/[^\s<]+)/g,
         (url) => `<a href="${url}" style="color:#2563eb;text-decoration:underline;word-break:break-all;">${url}</a>`
       )
 
+      // If content contains a standalone line "view more", convert it to a centered button using the first URL
+      // Auto-buttonize common CTAs using the first URL
+      const ctaPhrases = ['view more', 'learn more', 'see more']
+      const ctaPattern = new RegExp(`(^|\\n)\\s*(?:${ctaPhrases.map(p => p.replace(/ /g, '\\s*')).join('|')})\\s*(?=\\n|$)`, 'gi')
+      const withViewMoreButton = withPlainLinks.replace(ctaPattern, (match, prefix) => {
+        if (!firstUrl) return match
+        // Normalize the displayed text to Title Case of the matched CTA
+        const normalized = match
+          .replace(/^\s+|\s+$/g, '')
+          .replace(/^\n/, '')
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase())
+        return `${prefix}<div style="text-align:center;margin:20px 0;"><a href="${firstUrl}" target="_blank" class="button">${normalized}</a></div>`
+      })
+
       // Paragraphize
-      const paragraphs = withPlainLinks
+      const paragraphs = withViewMoreButton
         .split('\n')
         .map((p) => p.trim())
         .filter(Boolean)
-        .map((p) => `<p style="font-size:15px;margin:15px 0;line-height:1.6;">${p}</p>`)
+        .map((p) => {
+          // Avoid wrapping already-inserted button blocks or raw HTML blocks
+          if (/^<div[\s>]/i.test(p) || /^<a[\s>]/i.test(p)) return p
+          return `<p style="font-size:15px;margin:15px 0;line-height:1.6;">${p}</p>`
+        })
         .join('')
 
       // Single, valid HTML document (the duplicate block was removed)
@@ -139,8 +251,9 @@ export async function POST(request: Request) {
 
     // Send one email
     const sendEmail = async (email: string) => {
-      const html = formatHtmlContent(htmlContent, subject)
-      const text = toPlainText(htmlContent)
+      const personalized = personalizeContent(htmlContent, email)
+      const html = formatHtmlContent(personalized, subject)
+      const text = toPlainText(personalized)
 
       await transporter.sendMail({
         from: `"${sender.name}" <${sender.email}>`,
