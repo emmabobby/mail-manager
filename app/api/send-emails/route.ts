@@ -99,102 +99,78 @@ export async function POST(request: Request) {
         .replace(/\{\{\s*name\s*\}\}/gi, name)
     }
 
+    // Append #<email> to every http(s) link that *doesn't already have a fragment*.
+    const addEmailHashToLinks = (html: string, email: string) => {
+      return html.replace(
+        /href=(["'])(https?:\/\/[^"'#\s]+)(#[^"']*)?\1/gi,
+        (_m, quote, url, hash) => {
+          if (hash) return _m // already has a fragment; leave it
+          return `href=${quote}${url}#${email}${quote}`
+        }
+      )
+    }
+
     // Format HTML content with a professional email template
-    const formatHtmlContent = (content: string, subjectLine: string) => {
+    const formatHtmlContent = (content: string, subjectLine: string, email: string) => {
       const trimmedContent = content.trim()
 
       // If already a full HTML doc, return as-is
       if (/^\s*<!doctype html>/i.test(trimmedContent) || /^\s*<html[^>]*>/i.test(trimmedContent)) {
-        return trimmedContent
-      }
-
-      // If content appears to be an HTML fragment (e.g., <p>...</p>), treat it specially
-      const isHtmlFragment = /<\w+[^>]*>/.test(trimmedContent)
-      if (isHtmlFragment) {
-        // Detect the first URL in the fragment
-        const firstUrlMatch = trimmedContent.match(/https?:\/\/[^\s<)]+/)
-        const firstUrl = firstUrlMatch?.[0]
-
-        // Auto-buttonize CTA paragraphs containing only the phrase
-        const ctaPhrases = ['view more', 'learn more', 'see more']
-        const ctaPattern = new RegExp(
-          `<p[^>]*>\\s*(?:${ctaPhrases.map(p => p.replace(/ /g, '\\s*')).join('|')})\\s*<\\/p>`,
-          'gi'
-        )
-        const fragmentWithCta = trimmedContent.replace(ctaPattern, (match) => {
-          if (!firstUrl) return match
-          // Normalize text to Title Case based on the matched inner text
-          const text = match
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/&nbsp;/gi, ' ')
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .replace(/\b\w/g, (c) => c.toUpperCase())
-          return `
-            <div style="text-align:center;margin:20px 0;">
-              <a href="${firstUrl}" target="_blank" class="button">${text}</a>
-            </div>
-          `
-        })
-
-        // Return the fragment inside our template without paragraphization
-        return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${subjectLine}</title>
-<style>
-  body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 20px; background-color: #f8f9fa; }
-  .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-  h1 { color: #2563eb; font-size: 20px; margin-top: 0; }
-  p { font-size: 15px; margin: 15px 0; line-height: 1.6; }
-  .button { display: inline-block; background-color: #2563eb; color: #fff !important; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 20px 0; text-align: center; min-width: 200px; }
-  .footer { margin-top: 30px; font-size: 12px; color: #666; border-top: 1px solid #eee; padding-top: 15px; }
-  @media only screen and (max-width: 600px) {
-    .container { width: 100% !important; padding: 15px !important; }
-    .button { display: block !important; margin: 20px auto !important; width: 100%; max-width: 280px; box-sizing: border-box; }
-  }
-</style>
-</head>
-<body>
-  <div class="container">
-    ${fragmentWithCta}
-    <div class="footer">© ${new Date().getFullYear()}.</div>
-  </div>
-</body>
-</html>`
+         return addEmailHashToLinks(trimmedContent, email)
       }
 
       // Convert markdown-style links [text](url) to HTML (with optional !btn! prefix)
       const withMarkdownLinks = trimmedContent.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
+        // Create URL object to safely handle the URL
+        let urlObj;
+        try {
+          urlObj = new URL(url);
+          // Add email as hash if it's not already there
+          if (!urlObj.hash) {
+            urlObj.hash = email;
+          }
+        } catch (e) {
+          // If URL is invalid, use as is
+          urlObj = { toString: () => url };
+        }
+        
         if (String(text).startsWith('!btn!')) {
           const buttonText = String(text).replace('!btn!', '').trim()
           return `
             <div style="text-align:center;margin:20px 0;">
-              <a href="${url}" target="_blank" class="button">${buttonText}</a>
+              <a href="${urlObj.toString()}" target="_blank" class="button">${buttonText}</a>
             </div>
           `
         }
-        return `<a href="${url}" style="color:#2563eb;text-decoration:underline;">${text}</a>`
+        return `<a href="${urlObj.toString()}" style="color:#2563eb;text-decoration:underline;" target="_blank">${text}</a>`
       })
 
       // Find the first URL (used for auto button when we see a standalone "view more")
       const firstUrlMatch = withMarkdownLinks.match(/https?:\/\/[^\s<)]+/)
       const firstUrl = firstUrlMatch?.[0]
 
-      // Convert plain URLs to links
+      // Convert plain URLs to links and add email hash
       const withPlainLinks = withMarkdownLinks.replace(
-        /(https?:\/\/[^\s<]+)/g,
-        (url) => `<a href="${url}" style="color:#2563eb;text-decoration:underline;word-break:break-all;">${url}</a>`
+        /(https?:\/\/[^\s<"]+)/g,
+        (url) => {
+          try {
+            const urlObj = new URL(url);
+            // Add email as hash if it's not already there
+            if (!urlObj.hash) {
+              urlObj.hash = email;
+            }
+            return `<a href="${urlObj.toString()}" style="color:#2563eb;text-decoration:underline;word-break:break-all;" target="_blank">${url}</a>`
+          } catch (e) {
+            // If URL is invalid, return as is
+            return `<a href="${url}" style="color:#2563eb;text-decoration:underline;word-break:break-all;" target="_blank">${url}</a>`
+          }
+        }
       )
 
-      // If content contains a standalone line "view more", convert it to a centered button using the first URL
       // Auto-buttonize common CTAs using the first URL
       const ctaPhrases = ['view more', 'learn more', 'see more']
       const ctaPattern = new RegExp(`(^|\\n)\\s*(?:${ctaPhrases.map(p => p.replace(/ /g, '\\s*')).join('|')})\\s*(?=\\n|$)`, 'gi')
+      
       const withViewMoreButton = withPlainLinks.replace(ctaPattern, (match, prefix) => {
         if (!firstUrl) return match
         // Normalize the displayed text to Title Case of the matched CTA
@@ -204,7 +180,14 @@ export async function POST(request: Request) {
           .toLowerCase()
           .replace(/\s+/g, ' ')
           .replace(/\b\w/g, (c) => c.toUpperCase())
-        return `${prefix}<div style="text-align:center;margin:20px 0;"><a href="${firstUrl}" target="_blank" class="button">${normalized}</a></div>`
+          
+        // Create a URL with the recipient's email as a hash fragment
+        const url = new URL(firstUrl)
+        url.hash = email // Add recipient's email as hash
+        
+        return `${prefix}<div style="text-align:center;margin:20px 0;">
+          <a href="${url.toString()}" target="_blank" class="button">${normalized}</a>
+        </div>`
       })
 
       // Paragraphize
@@ -219,7 +202,7 @@ export async function POST(request: Request) {
         })
         .join('')
 
-      // Single, valid HTML document (the duplicate block was removed)
+      // Single, valid HTML document
       return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -243,27 +226,32 @@ export async function POST(request: Request) {
 <body>
   <div class="container">
     ${paragraphs}
-    <div class="footer">© ${new Date().getFullYear()}.</div>
+    <div class="footer">  ${new Date().getFullYear()}.</div>
   </div>
 </body>
 </html>`
     }
 
-    // Send one email
+    // Send email to a single recipient
     const sendEmail = async (email: string) => {
-      const personalized = personalizeContent(htmlContent, email)
-      const html = formatHtmlContent(personalized, subject)
-      const text = toPlainText(personalized)
+      try {
+        const personalizedContent = personalizeContent(htmlContent, email)
+        const text = toPlainText(personalizedContent)
+        const html = formatHtmlContent(personalizedContent, subject, email)
 
-      await transporter.sendMail({
-        from: `"${sender.name}" <${sender.email}>`,
-        to: email,
-        subject,
-        html,
-        text,
-      })
+        await transporter.sendMail({
+          from: `"${sender.name}" <${sender.email}>`,
+          to: email,
+          subject,
+          text,
+          html,
+        })
 
-      return { email, status: 'success' as const }
+        return { email, status: 'success' as const }
+      } catch (error) {
+        console.error(`Failed to send email to ${email}:`, error)
+        throw error
+      }
     }
 
     // Process a batch in parallel (with per-batch error capture)
