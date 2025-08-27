@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     }
 
     // Batch settings
-    const BATCH_SIZE = 150
+    const BATCH_SIZE = 2000 // Gmail limit is 2000/day, 500/3hrs for regular accounts
     const BATCH_DELAY_MS = 1000
 
     type Result = { email: string; status: 'success' } | { email: string; status: 'failed'; error: string }
