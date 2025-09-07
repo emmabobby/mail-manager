@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import nodemailer from 'nodemailer'
 
-export const runtime = 'nodejs' // ensure Node runtime for Nodemailer
+export const runtime = 'nodejs' 
 
 type EmailPayload = {
   emails: string[]
@@ -11,13 +11,11 @@ type EmailPayload = {
 }
 
 const isTransientSmtpError = (code?: number, response?: string) => {
-  // Common transient throttling/storage errors from Google
   if (!code && !response) return false
-  if (code && code >= 500) return false // hard failure
   const text = (response || '').toLowerCase()
+  if (code && code >= 400 && code < 500) return true
   return (
-    (code && code >= 400 && code < 500) ||
-    text.includes('4.7.0') || // rate limit / too many msgs
+    text.includes('4.7.0') ||
     text.includes('4.7.1') ||
     text.includes('try again later') ||
     text.includes('temporarily unavailable') ||
@@ -25,7 +23,8 @@ const isTransientSmtpError = (code?: number, response?: string) => {
     text.includes('rate limit') ||
     text.includes('quota exceeded') ||
     text.includes('greylist') ||
-    text.includes('timeout')
+    text.includes('timeout') ||
+    text.includes('temporary')
   )
 }
 
@@ -37,25 +36,34 @@ export async function POST(request: Request) {
   if (!htmlContent?.trim()) return NextResponse.json({ success: false, message: 'Email content is required' }, { status: 400 })
   if (!sender?.email || !sender?.name) return NextResponse.json({ success: false, message: 'Sender information is required' }, { status: 400 })
 
-  const AUTH_USER = process.env.EMAIL_USER
-  const AUTH_PASS = process.env.EMAIL_PASS
 
+  const AUTH_USER = process.env.SMTP_USER || process.env.SMTP_USER
+  const AUTH_PASS = process.env.SMTP_PASS || process.env.SMTP_PASS
   if (!AUTH_USER || !AUTH_PASS) {
     return NextResponse.json({ success: false, message: 'SMTP not configured (EMAIL_USER/EMAIL_PASS missing)' }, { status: 500 })
   }
 
-  // IMPORTANT: Gmail + bulk => throttle hard. Use pooled transport.
+  const HOST = process.env.SMTP_HOST || 'mail.privateemail.com'
+  const PORT = Number(process.env.SMTP_PORT || 465)
+  const SECURE = PORT === 465
+
+  console.log('SMTP host:', process.env.SMTP_HOST, 'port:', process.env.SMTP_PORT, 'user:', process.env.SMTP_USER?.toLowerCase());
+  console.log('From:', `"${sender.name}" <${sender.email}>`)
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    // Pooling lets Nodemailer reuse a few connections and self-throttle.
+    host: HOST,
+    port: PORT,
+    secure: SECURE,
     pool: true,
-    maxConnections: 2,     // keep very low to avoid Gmail rate alarms
-    maxMessages: 15,       // messages per connection before recycling
-    rateDelta: 1000,       // window for rateLimit (ms)
-    rateLimit: 3,          // ~3 msgs/sec across pool
+    maxConnections: 5,   // a few parallel connections
+    maxMessages: 50,     // recycle connection after N messages
+    rateDelta: 1000,     // per-second window
+    rateLimit: 10,       // ~10 msgs/sec across pool (tune carefully)
     auth: { user: AUTH_USER, pass: AUTH_PASS },
+    // timeouts help avoid hung sockets on shared hosting
+    connectionTimeout: 30_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 60_000,
   })
 
   try {
@@ -67,11 +75,9 @@ export async function POST(request: Request) {
     )
   }
 
-  // Gentle batching (avoid hundreds at once)
-  const BATCH_SIZE = 50
-  const BATCH_DELAY_MS = 8_000 // pause between batches so Gmail doesn’t flag you
-
-  // Retries for transient 4xx
+  const BATCH_SIZE = 40            // << you asked for "like 30 mails" per batch
+  const CONCURRENCY = 5            // send up to 5 at a time inside a batch
+  const BATCH_DELAY_MS = 3_000     // pause between batches if there are more than 30
   const MAX_RETRIES = 3
   const BASE_BACKOFF_MS = 2_000
 
@@ -180,11 +186,13 @@ export async function POST(request: Request) {
 </div></body></html>`
   }
 
-  // Ensure FROM matches authenticated account or a verified alias
+  // Ensure FROM generally matches the authenticated mailbox for best deliverability
   const fromHeader = `"${sender.name}" <${sender.email}>`
   const fromLooksMismatch = sender.email.toLowerCase() !== AUTH_USER.toLowerCase()
 
-  type Result = { email: string; status: 'success'; responseId?: string } | { email: string; status: 'failed'; error: string }
+  type Result =
+    | { email: string; status: 'success'; responseId?: string }
+    | { email: string; status: 'failed'; error: string }
 
   const sendOneWithRetry = async (rcpt: string): Promise<Result> => {
     let attempt = 0
@@ -199,8 +207,12 @@ export async function POST(request: Request) {
           subject,
           text,
           html,
+          // Envelope can help some servers; comment out if not needed
+          envelope: { from: AUTH_USER, to: rcpt },
+          headers: {
+            'List-Unsubscribe': `<mailto:unsubscribe@${(sender.email.split('@')[1] || 'yourdomain.com')}>`
+          }
         })
-        // info.accepted/info.rejected available; include messageId
         return { email: rcpt, status: 'success', responseId: info.messageId }
       } catch (err: any) {
         const code: number | undefined = err?.responseCode
@@ -217,37 +229,38 @@ export async function POST(request: Request) {
     return { email: rcpt, status: 'failed', error: 'Exceeded retry attempts' }
   }
 
+  // Simple worker pool for intra-batch concurrency
   const results: Result[] = []
   let successCount = 0
   let failCount = 0
 
+  const runBatch = async (batch: string[]) => {
+    const queue = [...batch]
+    const worker = async () => {
+      while (queue.length) {
+        const rcpt = queue.shift()!
+        const r = await sendOneWithRetry(rcpt)
+        results.push(r)
+        if (r.status === 'success') successCount++
+        else failCount++
+      }
+    }
+    const workers = Array.from({ length: Math.min(CONCURRENCY, batch.length) }, () => worker())
+    await Promise.all(workers)
+  }
+
   for (let i = 0; i < emails.length; i += BATCH_SIZE) {
     const batch = emails.slice(i, i + BATCH_SIZE)
-
-    // Send this batch sequentially-ish to respect Gmail’s rate; you can parallelize lightly if needed
-    for (const rcpt of batch) {
-      const r = await sendOneWithRetry(rcpt)
-      results.push(r)
-      if (r.status === 'success') successCount++
-      else failCount++
-    }
-
-    // Pause between batches (unless this was the last)
+    await runBatch(batch)
     if (i + BATCH_SIZE < emails.length) {
       await new Promise(r => setTimeout(r, BATCH_DELAY_MS))
     }
   }
 
-  // Helpful warnings
   const warnings: string[] = []
   if (fromLooksMismatch) {
     warnings.push(
-      'The From address does not match the authenticated Gmail account. Use the same Gmail or a verified alias to avoid deliverability issues.'
-    )
-  }
-  if (emails.length > 200) {
-    warnings.push(
-      'Gmail is not designed for bulk campaigns. Consider moving to an email service provider (Brevo/SendGrid/SES) with proper domain auth and warmup.'
+      'The From address does not match the authenticated SMTP account. Use the same mailbox (or set a verified alias) for best deliverability.'
     )
   }
 

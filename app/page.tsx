@@ -156,8 +156,8 @@ export default function EmailManager() {
           subject: emailSubject,
           htmlContent: finalContent,
           sender: {
-            name: "Mark Tillburgsales1",  // Replace with actual sender name
-            email: "Richard_pencersales1@gmail.com"
+            name: "Richard_Sales1",
+            email: process.env.SMTP_USER|| "richardsales@serviceconect.com"
           }
         }),
       });
