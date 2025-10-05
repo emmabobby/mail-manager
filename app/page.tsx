@@ -156,8 +156,8 @@ export default function EmailManager() {
           subject: emailSubject,
           htmlContent: finalContent,
           sender: {
-            name: "Richard_Sales1",
-            email: process.env.SMTP_USER|| "richardsales@serviceconect.com"
+            name: "Vera.Sales",
+            email: process.env.SMTP_USER|| "vera.sales@beardwoodmusallah.org"
           }
         }),
       });

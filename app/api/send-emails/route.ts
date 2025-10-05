@@ -106,8 +106,8 @@ export async function POST(request: Request) {
     )
   }
 
-  const BATCH_SIZE = 40            // << you asked for "like 30 mails" per batch
-  const CONCURRENCY = 5            // send up to 5 at a time inside a batch
+  const BATCH_SIZE = 5000            // << you asked for "like 30 mails" per batch
+  const CONCURRENCY = 100           // send up to 5 at a time inside a batch
   const BATCH_DELAY_MS = 3_000     // pause between batches if there are more than 30
   const MAX_RETRIES = 3
   const BASE_BACKOFF_MS = 2_000
