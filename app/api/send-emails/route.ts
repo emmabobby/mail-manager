@@ -37,20 +37,23 @@ export async function POST(request: Request) {
   if (!htmlContent?.trim()) return NextResponse.json({ success: false, message: 'Email content is required' }, { status: 400 })
   if (!sender?.email || !sender?.name) return NextResponse.json({ success: false, message: 'Sender information is required' }, { status: 400 })
 
-
-  const AUTH_USER = process.env.SMTP_USER || process.env.SMTP_USER
-  const AUTH_PASS = process.env.SMTP_PASS || process.env.SMTP_PASS
+  // simplified assignments
+  const AUTH_USER = process.env.SMTP_USER
+  const AUTH_PASS = process.env.SMTP_PASS
   if (!AUTH_USER || !AUTH_PASS) {
-    return NextResponse.json({ success: false, message: 'SMTP not configured (EMAIL_USER/EMAIL_PASS missing)' }, { status: 500 })
+    return NextResponse.json({ success: false, message: 'SMTP not configured (SMTP_USER/SMTP_PASS missing)' }, { status: 500 })
   }
 
   const HOST = process.env.SMTP_HOST || 'mail.privateemail.com'
   const PORT = Number(process.env.SMTP_PORT || 465)
   const SECURE = PORT === 465
 
-  console.log('SMTP host:', process.env.SMTP_HOST, 'port:', process.env.SMTP_PORT, 'user:', process.env.SMTP_USER?.toLowerCase());
-  console.log('From:', `"${sender.name}" <${sender.email}>`)
+  // Compute displayName and visible From early so logs match actual From header
+  const displayName = sender.name || 'ServiceConect'
+  const fromHeader = `"${displayName}" <${AUTH_USER}>`
 
+  console.log('SMTP host:', HOST, 'port:', PORT, 'user:', AUTH_USER?.toLowerCase())
+  console.log('Visible From:', fromHeader)
 
   const transporter = nodemailer.createTransport({
     host: HOST,
@@ -60,22 +63,17 @@ export async function POST(request: Request) {
       user: AUTH_USER,
       pass: AUTH_PASS
     },
-    // Debug mode
+    // optional debug/logging - can be left on for troubleshooting but not required for deliverability
     logger: true,
     debug: true,
-    // Disable pooling for now
     pool: false,
-    // Timeouts
     connectionTimeout: 30_000,
     greetingTimeout: 20_000,
     socketTimeout: 60_000,
-    // Disable some authentication methods that might cause issues
     authMethod: 'PLAIN',
-    // Disable TLS for now to rule out certificate issues
     ignoreTLS: false,
     requireTLS: true,
     tls: {
-      // Do not fail on invalid certs
       rejectUnauthorized: false
     }
   } as SMTPTransportOptions)
@@ -106,9 +104,9 @@ export async function POST(request: Request) {
     )
   }
 
-  const BATCH_SIZE = 5000            // << you asked for "like 30 mails" per batch
-  const CONCURRENCY = 100           // send up to 5 at a time inside a batch
-  const BATCH_DELAY_MS = 3_000     // pause between batches if there are more than 30
+  const BATCH_SIZE = 5000
+  const CONCURRENCY = 100
+  const BATCH_DELAY_MS = 3_000
   const MAX_RETRIES = 3
   const BASE_BACKOFF_MS = 2_000
 
@@ -276,11 +274,6 @@ export async function POST(request: Request) {
 </html>`
   }
 
-  // Ensure FROM generally matches the authenticated mailbox for best deliverability
-   // Use authenticated mailbox in visible From to avoid spam/JFE040011
-  const displayName = sender.name || 'ServiceConect'
-  const fromHeader = `"${displayName}" <${AUTH_USER}>`
-
   type Result =
     | { email: string; status: 'success'; responseId?: string }
     | { email: string; status: 'failed'; error: string; code?: string; response?: string; responseCode?: number }
@@ -292,8 +285,9 @@ export async function POST(request: Request) {
         const personalized = personalizeContent(htmlContent, rcpt)
         const html = formatHtmlContent(personalized, subject, rcpt)
         const text = toPlainText(personalized)
-        const domain = sender.email.split('@')[1] || 'yourdomain.com'
-        const messageId = `<${Date.now()}.${Math.random().toString(36).substring(2)}@${domain}>`
+        // Use sending domain (AUTH_USER) for DKIM alignment
+        const sendingDomain = (process.env.DKIM_DOMAIN || AUTH_USER.split('@')[1] || 'yourdomain.com')
+        const messageId = `<${Date.now()}.${Math.random().toString(36).substring(2)}@${sendingDomain}>`
         
         console.log(`Sending email to: ${rcpt}`)
         const mailOptions = {
@@ -302,27 +296,19 @@ export async function POST(request: Request) {
           subject,
           text,
           html,
-          // Important headers for deliverability
+          replyTo: sender.email,
           headers: {
             'Message-ID': messageId,
-            'X-Auto-Response-Suppress': 'OOF, AutoReply',
-            'Precedence': 'bulk',
-            'Auto-Submitted': 'auto-generated',
-            'List-Unsubscribe': `<mailto:unsubscribe@${domain}>, <https://${domain}/unsubscribe?email=${encodeURIComponent(rcpt)}>`,
+            'List-Unsubscribe': `<mailto:unsubscribe@${sendingDomain}>, <https://${sendingDomain}/unsubscribe?email=${encodeURIComponent(rcpt)}>`,
             'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-            'Feedback-ID': `campaign:${Date.now()}:${domain}`,
-            'X-Entity-Ref-ID': messageId,
-            'X-Report-Abuse': `Please report abuse by forwarding this email to abuse@${domain}`
           },
-          // Envelope must match your authenticated domain
           envelope: { 
             from: AUTH_USER, 
             to: rcpt 
           },
-          // DKIM signing would be handled by your SMTP server or you can add it here
           dkim: process.env.DKIM_PRIVATE_KEY ? {
-            domainName: domain,
-            keySelector: 'default',
+            domainName: process.env.DKIM_DOMAIN || AUTH_USER.split('@')[1],
+            keySelector: process.env.DKIM_SELECTOR || 'default',
             privateKey: process.env.DKIM_PRIVATE_KEY
           } : undefined
         }
@@ -364,7 +350,7 @@ export async function POST(request: Request) {
     return { email: rcpt, status: 'failed', error: 'Exceeded retry attempts' }
   }
 
-  // Simple worker pool for intra-batch concurrency
+  // worker pool unchanged
   const results: Result[] = []
   let successCount = 0
   let failCount = 0
@@ -391,13 +377,6 @@ export async function POST(request: Request) {
       await new Promise(r => setTimeout(r, BATCH_DELAY_MS))
     }
   }
-
-  // const warnings: string[] = []
-  // if (fromLooksMismatch) {
-  //   warnings.push(
-  //     'The From address does not match the authenticated SMTP account. Use the same mailbox (or set a verified alias) for best deliverability.'
-  //   )
-  // }
 
   return NextResponse.json({
     success: true,
