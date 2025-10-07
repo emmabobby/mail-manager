@@ -156,8 +156,8 @@ export default function EmailManager() {
           subject: emailSubject,
           htmlContent: finalContent,
           sender: {
-            name: "Vera.Sales",
-            email: process.env.SMTP_USER|| "vera.sales@beardwoodmusallah.org"
+            name: "Natalia.Sales",
+            email: process.env.SMTP_USER|| "natalia.sales@beardwoodmusallah.org"
           }
         }),
       });
